@@ -1,3 +1,13 @@
-.txt
-.csv
-.json
+__pycache__/
+
+*.txt
+
+*.csv
+
+*.png
+
+*.json
+
+discord_token.py
+
+*temp*

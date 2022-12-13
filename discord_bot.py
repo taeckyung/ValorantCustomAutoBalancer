@@ -1,3 +1,4 @@
+from discord_token import DISCORD_TOKEN
 import opgg_crawler
 import discord
 
@@ -42,4 +43,4 @@ intents = discord.Intents.default()
 intents.message_content = True
 
 client = MyClient(intents=intents)
-client.run('MTA1MTg0MTI0ODI3MDQ4NzY2Mw.GZH04H.DnOmJoHYEVTxndrVkyFMkpdQ4v9fgBzTZ1aoQc')
+client.run(DISCORD_TOKEN)

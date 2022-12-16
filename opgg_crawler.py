@@ -264,7 +264,7 @@ async def auto_balance() -> str:
     team_l = [x[1] for x in team_l]
     team_r = [x[1] for x in team_r]
 
-    return f"Team A: {' / '.join(team_l)} (average rating: {sum_l/5:.2f})\nTeam B: {' / '.join(team_l)} (average rating: {sum_r/5:.2f})\n"
+    return f"Team A: {' / '.join(team_l)} (average rating: {sum_l/5:.2f})\nTeam B: {' / '.join(team_r)} (average rating: {sum_r/5:.2f})\n"
 
 
 

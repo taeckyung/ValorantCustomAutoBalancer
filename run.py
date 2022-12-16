@@ -28,4 +28,4 @@ if __name__ == '__main__':
     signal.signal(signal.SIGINT, exit_gracefully)
 
     while True:
-        subprocess.run(["python", "discord_bot.py"], shell=True, check=True)
+        subprocess.run(["python", "discord_bot.py"])

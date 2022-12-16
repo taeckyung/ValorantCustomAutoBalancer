@@ -32,10 +32,20 @@ class RiotID:
         return self.fullName
 
 
+async def riotID_to_discord(content: str) -> str:
+    df = pd.read_csv("discord.csv", encoding="utf-8")
+    user_list = [(str(RiotID(user[0], user[1])), user[2]) for user in df.to_numpy().tolist()]
+
+    for riot, discord in user_list:
+        content = content.replace(riot, f"<@{discord}>")
+
+    return content    
+
+
 async def get_member() -> str:
     user_df = pd.read_csv("account.csv", encoding="utf-8")
     user_list = [str(RiotID(user[0], user[1])) for user in user_df.to_numpy().tolist()]
-    return "현재 멤버: " + str(user_list)
+    return "현재 멤버: " + " / ".join(user_list)
 
 
 async def add_member(members: str) -> str:
@@ -83,10 +93,12 @@ async def remove_member(members: str) -> str:
 
     return result_str
 
+
 async def get_stats(search_limit=100, day_limit=30) -> Tuple[str, datetime, pd.DataFrame]:
     loop = asyncio.get_event_loop()
 
-    match_candidates_to_search: Dict[str, Dict[str, str]] = dict()
+    match_id_list = []
+    match_candidates_to_search = []
     user_stats_list: Dict[str, Dict] = dict()
     latest_match_time = datetime.fromisocalendar(1900,1,1)
     total_match_cnt = 0
@@ -125,7 +137,7 @@ async def get_stats(search_limit=100, day_limit=30) -> Tuple[str, datetime, pd.D
                 if match["roundResults"] is None:  # invalid custom game
                     continue
 
-                if match["matchId"] in match_candidates_to_search:  # already exists
+                if match["matchId"] in match_id_list:  # already exists
                     continue
 
                 round_result = str(match["roundResults"])
@@ -138,18 +150,15 @@ async def get_stats(search_limit=100, day_limit=30) -> Tuple[str, datetime, pd.D
                 match_time = datetime.strptime(match["gameStartDateTime"], "%Y-%m-%dT%H:%M:%S.%fZ")
 
                 # only include within MAX_SEARCH_DAY_LIMIT days
-                if match_time > datetime.now() - timedelta(days=day_limit):  
-                    match_candidates_to_search[match['matchId']] = {
-                        'id': id,
-                        'gameStartTime': match_time
-                    }
+                # if match_time > datetime.now() - timedelta(days=day_limit):  
+                match_id_list.append(match["matchId"])
+                match_candidates_to_search.append((match_time, match['matchId'], id))
 
-    for key in match_candidates_to_search.keys():
-        match_id = key
-        val = match_candidates_to_search[key]
-        id = val['id']
-        
-        url = f"https://valorant.op.gg/api/player/matches/{match_id}?gameName={id.name}&tagLine={id.tag}"
+
+    match_candidates_to_search.sort(reverse=True)
+    match_candidates_to_search = match_candidates_to_search[:30]
+    for match_time, match_id, uid in match_candidates_to_search:
+        url = f"https://valorant.op.gg/api/player/matches/{match_id}?gameName={uid.name}&tagLine={uid.tag}"
         response = requests.get(url, headers=HEADER)
         match_record = json.loads(response.text)
 
@@ -162,7 +171,6 @@ async def get_stats(search_limit=100, day_limit=30) -> Tuple[str, datetime, pd.D
             continue
 
         total_match_cnt += 1
-        match_time = val['gameStartTime']
         if latest_match_time < match_time:
             latest_match_time = match_time
 
@@ -256,7 +264,7 @@ async def auto_balance() -> str:
     team_l = [x[1] for x in team_l]
     team_r = [x[1] for x in team_r]
 
-    return f"Team A: {team_l} (average rating: {sum_l/5:.2f})\nTeam B: {team_r} (average rating: {sum_r/5:.2f})\n"
+    return f"Team A: {' / '.join(team_l)} (average rating: {sum_l/5:.2f})\nTeam B: {' / '.join(team_l)} (average rating: {sum_r/5:.2f})\n"
 
 
 

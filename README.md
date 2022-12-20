@@ -12,3 +12,9 @@ $ conda env create -f conda_env.yaml
 3. Run `$ python run.py`.
    * Press `CTRL+C` to restart.
    * If you want to close the program, press `CTRL+C` again.
+
+
+# Tested Environment
+```
+Windows 10, Python 3.10.8co
+```

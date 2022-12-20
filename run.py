@@ -1,6 +1,7 @@
 import subprocess
 import signal
 import sys
+import traceback
 
 
 original_sigint = signal.getsignal(signal.SIGINT)
@@ -28,4 +29,9 @@ if __name__ == '__main__':
     signal.signal(signal.SIGINT, exit_gracefully)
 
     while True:
-        subprocess.run(["python", "discord_bot.py"])
+        try:
+            subprocess.run(["python", "code/discord_bot.py"])
+        except KeyboardInterrupt as e:
+            raise e
+        except Exception:
+            traceback.print_stack()

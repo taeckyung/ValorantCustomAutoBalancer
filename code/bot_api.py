@@ -213,7 +213,7 @@ def _trans_mmr(MMR):
 
 def _update_mmr(match: Dict, mmr_list: pd.Series):
     # init
-    elos, user_names, fronts, backs = [], [], [], []
+    elos, user_ids, fronts, backs = [], [], [], []
 
     match = match['participants']
 
@@ -241,32 +241,35 @@ def _update_mmr(match: Dict, mmr_list: pd.Series):
         # secret account
         if player['riotAccount'] == None:
             elos.append(DEFAULT_MMR * if_win)
-            user_names.append(None)
+            user_ids.append(None)
         else:
-            name = RiotID(player['riotAccount']['gameName'], player['riotAccount']['tagLine']).fullName
-            if name not in mmr_list.index:
+            id = RiotID(player['riotAccount']['gameName'], player['riotAccount']['tagLine']).fullName
+            if id not in mmr_list.index:
                 elos.append(DEFAULT_MMR * if_win)
-                user_names.append(None)
+                user_ids.append(None)
             else:
-                elos.append(mmr_list[name] * if_win)
-                user_names.append(name)
+                elos.append(mmr_list[id] * if_win)
+                user_ids.append(id)
     # make numpy
     elos = np.array(elos)
-    user_names = np.array(user_names)
+    user_ids = np.array(user_ids)
 
     # win rate version
     mean_elo = elos.mean()
-    winner_sum = elos[elos >= 0].sum()
-    losser_sum = np.abs(elos[elos <= 0].sum())
+    abs_elos = np.abs(elos)
+    winner_sum = abs_elos[elos >= 0].sum()
+    losser_sum = abs_elos[elos <= 0].sum()
     rate_win = 2 * winner_sum / (winner_sum + losser_sum)
     rate_loss = 2 * losser_sum / (winner_sum + losser_sum)
 
-    # TODO: Fix errors
-    dMMR = np.array([1/rate_win*fronts[i] + mean_elo/elo_in*backs[i] if elo_in >= 0
-                     else rate_loss*fronts[i] + mean_elo/elo_in*backs[i] for i, elo_in in enumerate(elos)])/8
+    dMMR_front = np.array([1/rate_win*fronts[i] if elo_in>=0
+                     else rate_loss*fronts[i] for i, elo_in in enumerate(elos)])/8
+    dMMR_back = np.array([mean_elo/abs_elos[i] * back if back>=0
+                          else abs_elos[i]/mean_elo * back for i, back in enumerate(backs)])/8
+    dMMR = dMMR_front + dMMR_back
 
     # update
-    for j, id in enumerate(user_names):
+    for j, id in enumerate(user_ids):
         if id == None:
             continue
         mmr_list[id] += dMMR[j]
@@ -305,7 +308,8 @@ async def get_member() -> str:
 async def add_member(members: str) -> str:
     result_str = ""
 
-    for member in members.split():
+    for member in members.split(','):
+        member = member.strip()
         try:
             id = RiotID(member)
         except:
@@ -328,7 +332,7 @@ async def add_member(members: str) -> str:
         if all_user_df["gameName"].isin([id.name]).any() and all_user_df["tagLine"].isin([id.tag]).any():
             continue
 
-        all_user_df = pd.concat([all_user_df, pd.Series({'gameName': id.name, 'tagLine': id.tag}).to_frame().T], ignore_index=True)
+        all_user_df = pd.concat([all_user_df, pd.Series({'gameName': id.name, 'tagLine': id.tag, 'discordId': None}).to_frame().T], ignore_index=True)
         all_user_df.to_csv("member_all.csv", encoding="utf-8", index=False, header=True)
 
     return result_str
@@ -430,13 +434,13 @@ async def update() -> str:
     with open(file="match_record.pickle", mode="wb") as f:
         pickle.dump(data, f)
 
+    user_list = [str(id) for id in user_list]
     time_list = []
     df_list = []
     mmr_list = pd.Series(data=np.ones(len(user_list)) * DEFAULT_MMR, index=user_list)
-    name_to_id = {user_list[i].fullName: i for i in range(len(user_list))}
 
     for match in match_record_list:
-        mmr_list = _update_mmr(match, mmr_list, name_to_id)
+        mmr_list = _update_mmr(match, mmr_list)
         df_list.append(mmr_list.copy())
         time = datetime.strptime(match['participants'][0]["gameStartDateTime"], "%Y-%m-%dT%H:%M:%S.%fZ") + timedelta(hours=9)
         time_list.append(time.isoformat().replace('T', ' '))

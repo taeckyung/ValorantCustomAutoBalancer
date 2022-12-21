@@ -14,7 +14,10 @@ class MyClient(discord.Client):
             content = content.replace('!내전','').strip()
             if content.startswith('스탯'):
                 result, fname = await bot_api.get_stats()
-                await message.channel.send(content=result, file=discord.File(fname))
+                if fname is None:
+                    await message.channel.send(content=result)
+                else:
+                    await message.channel.send(content=result, file=discord.File(fname))
             elif content.startswith('멤버'):
                 content = content.replace('멤버','').strip()
                 if content.startswith('추가'):
@@ -37,11 +40,11 @@ class MyClient(discord.Client):
                 result = await bot_api.auto_balance()
                 result = await bot_api.riotID_to_discord(result)
                 await message.channel.send(content=result)
-            elif content.startswith('랜덤맵'):
+            elif content.startswith('맵'):
                 result = await bot_api.random_map()
                 await message.channel.send(content=result)
             else:
-                await message.channel.send(content="사용법: `!내전 멤버` `!내전 업데이트` `!내전 랜덤맵` `!내전 멤버 추가 [이름]` `!내전 멤버 삭제 [이름]` `!내전 자동밸런스` `!내전 스탯`")
+                await message.channel.send(content="사용법: `!내전 멤버` `!내전 업데이트` `!내전 맵` `!내전 멤버 추가 [이름]` `!내전 멤버 삭제 [이름]` `!내전 자동밸런스` `!내전 스탯`")
         elif content.startswith('!') and not content.startswith('!!') and message.author.id in [329146794128834570, 391487027855622145]:
             content = content.replace('!','').strip()
             await message.channel.send(content=content)

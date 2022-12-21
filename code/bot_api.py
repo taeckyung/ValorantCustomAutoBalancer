@@ -51,7 +51,7 @@ class RiotID:
         return self.fullName == __o.fullName
 
 
-def get_user_list(all=False) -> List[RiotID]:
+def _get_user_list(all=False) -> List[RiotID]:
     if all:
         user_df = pd.read_csv("member_all.csv", encoding="utf-8")
     else:
@@ -59,13 +59,13 @@ def get_user_list(all=False) -> List[RiotID]:
     return [RiotID(user[0], user[1]) for user in user_df.to_numpy().tolist()]
 
 
-def refresh_match_records(user_list):
+def _refresh_match_records(user_list):
     for id in user_list:
         url = f"https://valorant.op.gg/api/renew?gameName={id.name}&tagLine={id.tag}"
         requests.get(url, headers=HEADER)
 
 
-def get_match_candidates(user_list, search_limit, descending=True) -> List[Tuple[datetime, str, RiotID]]:
+def _get_match_candidates(user_list, search_limit, descending=True) -> List[Tuple[datetime, str, RiotID]]:
     match_id_list = set()
     match_candidates_to_search = []
 
@@ -108,7 +108,7 @@ def get_match_candidates(user_list, search_limit, descending=True) -> List[Tuple
     return match_candidates_to_search
 
 
-def get_match_records(match_candidates_to_search) -> List:
+def _get_match_records(match_candidates_to_search) -> List:
     match_record_list = []
 
     for _, match_id, uid in match_candidates_to_search:
@@ -129,7 +129,7 @@ def get_match_records(match_candidates_to_search) -> List:
     return match_record_list 
 
 
-def get_user_stats(user_list, match_record_list) -> pd.DataFrame:
+def _get_user_stats(user_list, match_record_list) -> pd.DataFrame:
     user_stats_list: Dict[str, List[Dict[str, float]]] = dict()
 
     for id in user_list:
@@ -166,14 +166,14 @@ def get_user_stats(user_list, match_record_list) -> pd.DataFrame:
     #     print("--------------------------------------")
 
     final_df["kda"] = final_df.apply(lambda r: (r["kills"] + r["assists"]) / r["deaths"], axis=1)
-    mmr = get_latest_mmr()
+    mmr = _get_latest_mmr()
     final_df["mmr"] = mmr
     final_df = final_df.sort_values(by=["mmr"], ascending=False).round(2)
 
     return final_df
 
 
-def restricted_largest_differencing_method(array: List[Tuple[float, Any]]) -> List:
+def _restricted_largest_differencing_method(array: List[Tuple[float, Any]]) -> List:
     assert(len(array) % 2 == 0)
     array_sorted = sorted(array, reverse=True)
     diff_array = []
@@ -200,7 +200,7 @@ def restricted_largest_differencing_method(array: List[Tuple[float, Any]]) -> Li
     return set_l, set_r, np.sum([x[0] for x in set_l]), np.sum([x[0] for x in set_r])
 
 
-def trans_mmr(MMR):
+def _trans_mmr(MMR):
     if MMR<50:
         tMMR = 50
     elif MMR>300:
@@ -211,34 +211,27 @@ def trans_mmr(MMR):
     return tMMR
 
 
-def update_mmr(match, mmr_list, name_to_id):
+def _update_mmr(match: Dict, mmr_list: pd.Series):
     # init
-    bef_MMR = mmr_list.copy()
-    elos, idxs, fronts, backs = [], [], [], []
-    cnt_games = np.zeros((2, len(mmr_list)))
+    elos, user_names, fronts, backs = [], [], [], []
 
     match = match['participants']
 
     # check match
     if len(match) != 10:
-        return mmr_list, cnt_games, np.zeros(10)
+        return mmr_list
 
     # check round
     rounds = match[0]['roundResults'].split(':')
     total_rounds = match[0]['rounds']
-    if int(rounds[0]) > int(rounds[1]):
-        won_rounds = int(rounds[0]) - int(rounds[1])
-    else:
-        won_rounds = int(rounds[1]) - int(rounds[0])
+    win_rounds = np.abs(int(rounds[1]) - int(rounds[0]))
 
     # run by person
-    for i in range(len(match)):
-        now_people = match[i]
-        won_value = 1 if now_people['won'] else -1
+    for player in match:
+        if_win = 1 if player['won'] else -1
 
-        front = FRONT_CONST * won_value * won_rounds
-        back = BACK_CONST * (
-                    total_rounds * now_people['scorePerRound'] - total_rounds * EXPECTED_SCORE) / EXPECTED_SCORE
+        front = FRONT_CONST * if_win * win_rounds
+        back = BACK_CONST * total_rounds * (player['scorePerRound'] - EXPECTED_SCORE) / EXPECTED_SCORE
         # score = 1 / (FRONT_CONST + BACK_CONST) * (front + back)
 
         # save
@@ -246,49 +239,43 @@ def update_mmr(match, mmr_list, name_to_id):
         backs.append(back)
 
         # secret account
-        if now_people['riotAccount'] == None:
-            elos.append(DEFAULT_MMR * won_value)
-            idxs.append(-1)
+        if player['riotAccount'] == None:
+            elos.append(DEFAULT_MMR * if_win)
+            user_names.append(None)
         else:
-            name = RiotID(now_people['riotAccount']['gameName'], now_people['riotAccount']['tagLine']).fullName
-            if name not in name_to_id:
-                elos.append(DEFAULT_MMR * won_value)
-                idxs.append(-1)
+            name = RiotID(player['riotAccount']['gameName'], player['riotAccount']['tagLine']).fullName
+            if name not in mmr_list.index:
+                elos.append(DEFAULT_MMR * if_win)
+                user_names.append(None)
             else:
-                idx = name_to_id[name]
-                elos.append(bef_MMR[idx] * won_value)
-                idxs.append(idx)
-                if won_value == 1:
-                    cnt_games[0][idx] += 1
-                else:
-                    cnt_games[1][idx] += 1
-
+                elos.append(mmr_list[name] * if_win)
+                user_names.append(name)
     # make numpy
     elos = np.array(elos)
-    idxs = np.array(idxs)
+    user_names = np.array(user_names)
 
     # win rate version
-    abs_elos = np.abs(elos)
-    mean_elo = abs_elos.mean()
-    winner_sum = elos[elos>=0].sum()
-    losser_sum = abs_elos[elos<=0].sum()
+    mean_elo = elos.mean()
+    winner_sum = elos[elos >= 0].sum()
+    losser_sum = np.abs(elos[elos <= 0].sum())
     rate_win = 2 * winner_sum / (winner_sum + losser_sum)
     rate_loss = 2 * losser_sum / (winner_sum + losser_sum)
 
-    dMMR = np.array([1/rate_win*fronts[i]+mean_elo/elo_in*backs[i] if elo_in>=0
-                     else rate_loss*fronts[i]+mean_elo/elo_in*backs[i] for i, elo_in in enumerate(abs_elos)])/8
+    # TODO: Fix errors
+    dMMR = np.array([1/rate_win*fronts[i] + mean_elo/elo_in*backs[i] if elo_in >= 0
+                     else rate_loss*fronts[i] + mean_elo/elo_in*backs[i] for i, elo_in in enumerate(elos)])/8
 
     # update
-    for j, id in enumerate(idxs):
-        if id == -1:
+    for j, id in enumerate(user_names):
+        if id == None:
             continue
         mmr_list[id] += dMMR[j]
-        mmr_list[id] = trans_mmr(mmr_list[id])
+        mmr_list[id] = _trans_mmr(mmr_list[id])
 
     return mmr_list
 
 
-def get_latest_mmr():
+def _get_latest_mmr():
     try:
         df = pd.read_csv("mmr.csv", index_col=0)
         return df.iloc[-1].T
@@ -311,7 +298,7 @@ async def riotID_to_discord(content: str) -> str:
 
 
 async def get_member() -> str:
-    user_list = [str(user) for user in get_user_list()]
+    user_list = [str(user) for user in _get_user_list()]
     return "현재 멤버: " + " / ".join(user_list)
 
 
@@ -333,7 +320,16 @@ async def add_member(members: str) -> str:
 
         user_df = pd.concat([user_df, pd.Series({'gameName': id.name, 'tagLine': id.tag}).to_frame().T], ignore_index=True)
         user_df.to_csv("member_current.csv", encoding="utf-8", index=False, header=True)
+
         result_str += f"멤버가 추가되었습니다: {member}\n"
+
+        all_user_df = pd.read_csv("member_all.csv", encoding="utf-8")
+
+        if all_user_df["gameName"].isin([id.name]).any() and all_user_df["tagLine"].isin([id.tag]).any():
+            continue
+
+        all_user_df = pd.concat([all_user_df, pd.Series({'gameName': id.name, 'tagLine': id.tag}).to_frame().T], ignore_index=True)
+        all_user_df.to_csv("member_all.csv", encoding="utf-8", index=False, header=True)
 
     return result_str
 
@@ -362,7 +358,7 @@ async def remove_member(members: str) -> str:
 
 
 async def get_stats() -> str:
-    user_list = get_user_list(all=True)
+    user_list = _get_user_list(all=True)
 
     try:
         with open(file="match_record.pickle", mode="rb") as f:
@@ -370,12 +366,12 @@ async def get_stats() -> str:
             last_updated = data["time"]
             match_record_list = data["match_record_list"][::-1][:30]
     except:
-        return "(오류) 데이터를 업데이트 해주세요."
+        return "(오류) 데이터를 업데이트 해주세요.", None
     
     latest_match_time = datetime.strptime(match_record_list[0]['participants'][0]["gameStartDateTime"], 
                                             "%Y-%m-%dT%H:%M:%S.%fZ") + timedelta(hours=9)
 
-    final_df = get_user_stats(user_list, match_record_list)    
+    final_df = _get_user_stats(user_list, match_record_list)    
     dfi.export(final_df, 'table.png', max_cols=-1, max_rows=-1)
 
     # string += f"```{final_df.to_markdown(tablefmt='github', floatfmt='.1f')}```"
@@ -383,7 +379,7 @@ async def get_stats() -> str:
 
 
 async def auto_balance() -> str:
-    user_list = get_user_list(all=False)
+    user_list = _get_user_list(all=False)
 
     if len(user_list) > 10:
         return "(오류) 멤버가 10명보다 많습니다. 멤버를 삭제해주세요."
@@ -394,7 +390,7 @@ async def auto_balance() -> str:
         data = pickle.load(f)
         last_updated = data["time"]
         
-    df = get_latest_mmr()
+    df = _get_latest_mmr()
     if df is None:
         return "(오류) 데이터를 업데이트 해주세요."
         
@@ -410,7 +406,7 @@ async def auto_balance() -> str:
     avg = np.nanmean([x[0] for x in rating_list])
     rating_list = [(avg, x[1]) if np.isnan(x[0]) else x for x in rating_list]
 
-    team_l, team_r, sum_l, sum_r = restricted_largest_differencing_method(rating_list)
+    team_l, team_r, sum_l, sum_r = _restricted_largest_differencing_method(rating_list)
 
     team_l = [x[1] for x in team_l]
     team_r = [x[1] for x in team_r]
@@ -419,10 +415,10 @@ async def auto_balance() -> str:
 
 
 async def update() -> str:
-    user_list = get_user_list(all=True)
-    refresh_match_records(user_list)
-    match_candidates_to_search = get_match_candidates(user_list, 500, descending=False)
-    match_record_list = get_match_records(match_candidates_to_search)
+    user_list = _get_user_list(all=True)
+    _refresh_match_records(user_list)
+    match_candidates_to_search = _get_match_candidates(user_list, 500, descending=False)
+    match_record_list = _get_match_records(match_candidates_to_search)
 
     if len(match_record_list) == 0:
         return "(오류) 매치 기록이 존재하지 않습니다."
@@ -436,11 +432,11 @@ async def update() -> str:
 
     time_list = []
     df_list = []
-    mmr_list = np.ones(len(user_list)) * DEFAULT_MMR
+    mmr_list = pd.Series(data=np.ones(len(user_list)) * DEFAULT_MMR, index=user_list)
     name_to_id = {user_list[i].fullName: i for i in range(len(user_list))}
 
     for match in match_record_list:
-        mmr_list = update_mmr(match, mmr_list, name_to_id)
+        mmr_list = _update_mmr(match, mmr_list, name_to_id)
         df_list.append(mmr_list.copy())
         time = datetime.strptime(match['participants'][0]["gameStartDateTime"], "%Y-%m-%dT%H:%M:%S.%fZ") + timedelta(hours=9)
         time_list.append(time.isoformat().replace('T', ' '))

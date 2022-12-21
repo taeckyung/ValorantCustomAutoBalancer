@@ -23,7 +23,7 @@ HEADER = {'Accept-Language':'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7'}
 DEFAULT_MMR = 150
 FRONT_CONST = 4
 BACK_CONST = 1
-EXPECTED_SCORE = 150
+EXPECTED_SCORE = 200
 
 ################################################################################################
 # Helper Functions
@@ -206,7 +206,7 @@ def _trans_mmr(MMR):
     elif MMR>300:
         tMMR = 300
     else:
-        tMMR = 0.97*(MMR-150)+150
+        tMMR = 0.95*(MMR-150)+150
     # tMMR = 100/(1+np.exp(-(MMR-100)/50))+50
     return tMMR
 
@@ -255,22 +255,22 @@ def _update_mmr(match: Dict, mmr_list: pd.Series):
     user_ids = np.array(user_ids)
 
     # win rate version
-    mean_elo = elos.mean()
     abs_elos = np.abs(elos)
+    mean_elo = abs_elos.mean()
     winner_sum = abs_elos[elos >= 0].sum()
     losser_sum = abs_elos[elos <= 0].sum()
     rate_win = 2 * winner_sum / (winner_sum + losser_sum)
     rate_loss = 2 * losser_sum / (winner_sum + losser_sum)
 
     dMMR_front = np.array([1/rate_win*fronts[i] if elo_in>=0
-                     else rate_loss*fronts[i] for i, elo_in in enumerate(elos)])/8
+                     else rate_loss*fronts[i] for i, elo_in in enumerate(elos)]) / 8
     dMMR_back = np.array([mean_elo/abs_elos[i] * back if back>=0
-                          else abs_elos[i]/mean_elo * back for i, back in enumerate(backs)])/8
+                          else abs_elos[i]/mean_elo * back for i, back in enumerate(backs)]) / 8
     dMMR = dMMR_front + dMMR_back
 
     # update
     for j, id in enumerate(user_ids):
-        if id == None:
+        if id is None:
             continue
         mmr_list[id] += dMMR[j]
         mmr_list[id] = _trans_mmr(mmr_list[id])
@@ -459,5 +459,5 @@ async def random_map() -> str():
 
 # %%
 if __name__ == '__main__':
-    print(asyncio.run(random_map()))
+    print(asyncio.run(get_stats()))
     # print(get_latest_mmr())

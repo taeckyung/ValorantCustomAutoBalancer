@@ -296,7 +296,7 @@ async def riotID_to_discord(content: str) -> str:
 
     for riot, discord in user_list:
         if not np.isnan(discord):
-            content = content.replace(riot, f"<@{int(discord)}>")
+            content = content.replace(riot, f"<@{int(discord)}> ({riot})")
 
     return content    
 

@@ -38,7 +38,7 @@ class MyClient(discord.Client):
                 await message.channel.send(content=result)
             elif content.startswith('자동밸런스') or content.startswith('자밸'):
                 result = await bot_api.auto_balance()
-                result = await bot_api.riotID_to_discord(result)
+                # result = await bot_api.riotID_to_discord(result)
                 await message.channel.send(content=result)
             elif content.startswith('맵'):
                 result = await bot_api.random_map()

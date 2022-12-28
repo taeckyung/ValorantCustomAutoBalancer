@@ -295,7 +295,8 @@ async def riotID_to_discord(content: str) -> str:
     user_list = [(str(RiotID(user[0], user[1])), user[2]) for user in df.to_numpy().tolist()]
 
     for riot, discord in user_list:
-        content = content.replace(riot, f"<@{discord}>")
+        if not np.isnan(discord):
+            content = content.replace(riot, f"<@{int(discord)}>")
 
     return content    
 
@@ -341,7 +342,7 @@ async def add_member(members: str) -> str:
 async def remove_member(members: str) -> str:
     result_str = ""
 
-    for member in members.split():
+    for member in members.split(','):
         try:
             id = RiotID(member)
         except:

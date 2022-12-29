@@ -45,8 +45,9 @@ class MyClient(discord.Client):
                 await message.channel.send(content=result)
             else:
                 await message.channel.send(content="사용법: `!내전 멤버` `!내전 업데이트` `!내전 맵` `!내전 멤버 추가 [이름]` `!내전 멤버 삭제 [이름]` `!내전 자동밸런스` `!내전 스탯`")
-        elif content.startswith('!') and not content.startswith('!!') and message.author.id in [329146794128834570, 391487027855622145]:
-            content = content.replace('!','').strip()
+        elif content.startswith('!냥'):
+            content = content.replace('!냥','').strip()
+            await message.delete()
             await message.channel.send(content=content)
 
 

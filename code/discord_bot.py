@@ -32,7 +32,7 @@ class MyClient(discord.Client):
                     result = await bot_api.get_member()
                     await message.channel.send(content=result)
             elif content.startswith('업데이트'):
-                pending_message = await message.channel.send("업데이트중... 30초정도 기다리세용")
+                pending_message = await message.channel.send("업데이트중... 기다리세용")
                 result = await bot_api.update()
                 await pending_message.delete()
                 await message.channel.send(content=result)

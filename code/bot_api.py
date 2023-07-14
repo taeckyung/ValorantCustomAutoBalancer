@@ -5,6 +5,8 @@ import time
 import pickle
 import random
 import asyncio
+import traceback
+import aiohttp
 import requests
 import numpy as np
 import pandas as pd
@@ -29,6 +31,7 @@ EXPECTED_SCORE = 200
 # Helper Functions
 ################################################################################################
 
+
 class RiotID:
     def __init__(self, name: str, tag: str = None) -> None:
         name = name.upper()
@@ -51,7 +54,7 @@ class RiotID:
         return self.fullName == __o.fullName
 
 
-def _get_user_list(all=False) -> List[RiotID]:
+def _get_user_list(all=True) -> List[RiotID]:
     if all:
         user_df = pd.read_csv("member_all.csv", encoding="utf-8")
     else:
@@ -59,74 +62,92 @@ def _get_user_list(all=False) -> List[RiotID]:
     return [RiotID(user[0], user[1]) for user in user_df.to_numpy().tolist()]
 
 
-def _refresh_match_records(user_list):
-    for id in user_list:
-        url = f"https://valorant.op.gg/api/renew?gameName={id.name}&tagLine={id.tag}"
-        requests.get(url, headers=HEADER)
+async def _refresh_match_records(user_list):
+    conn = aiohttp.TCPConnector(limit=5)
+    async with aiohttp.ClientSession(connector=conn) as session:
+        async def body(id):
+            url = f"https://valorant.op.gg/api/renew?gameName={id.name}&tagLine={id.tag}"
+
+            async with session.get(url, headers=HEADER) as r:
+                # print(id, r.status)
+                return r.status
+
+        await asyncio.gather(*(body(user) for user in user_list))
 
 
-def _get_match_candidates(user_list, search_limit, descending=True) -> List[Tuple[datetime, str, RiotID]]:
+async def _get_match_candidates(user_list, search_limit, descending=True) -> List[Tuple[datetime, str, RiotID]]:
     match_id_list = set()
     match_candidates_to_search = []
-
-    for id in user_list:
-        for offset in range(0, search_limit+1, 20):
+    
+    conn = aiohttp.TCPConnector(limit=5)
+    async with aiohttp.ClientSession(connector=conn) as session:
+        async def body(id, offset):
             url = f"https://valorant.op.gg/api/player/matches?gameName={id.name}&tagLine={id.tag}&queueId=custom&offset={offset}&limit=20"
-            response = requests.get(url, headers=HEADER)
-            match_record = json.loads(response.text)
+            try:
+                async with session.get(url, headers=HEADER) as r:
+                    match_record = json.loads(await r.text())
+            except aiohttp.ClientConnectionError:
+                traceback.format_exc()
+                return
 
             if (isinstance(match_record, dict)) and ('errorCode' in match_record.keys()):
-                # print(match_record)
-                continue
+                return
 
             for match in match_record:
                 if match['queueId'] != '':  # custom game does not have queueid
-                    continue
+                    return
 
                 if match["roundResults"] is None:  # invalid custom game
-                    continue
+                    return
 
                 if match["matchId"] in match_id_list:  # already exists
-                    continue
+                    return
 
                 round_result = str(match["roundResults"])
                 win_count_l = int(round_result.split(":")[0])
                 win_count_r = int(round_result.split(":")[1])
 
                 if win_count_l != 13 and win_count_r != 13:  # properly ended games / exclude deathmatches
-                    continue
+                    return
 
-                match_time = datetime.strptime(match["gameStartDateTime"], "%Y-%m-%dT%H:%M:%S.%fZ")
+                match_time = datetime.strptime(match["gameStartDateTime"].split("+")[0], "%Y-%m-%dT%H:%M:%S")
 
                 # only include within MAX_SEARCH_DAY_LIMIT days
                 # if match_time > datetime.now() - timedelta(days=day_limit):  
                 match_id_list.add(match["matchId"])
                 match_candidates_to_search.append((match_time, match['matchId'], id))
 
+        await asyncio.gather(*(body(id, offset) for id in user_list for offset in range(0, search_limit+1, 20)))
+
     match_candidates_to_search.sort(reverse=descending)
 
     return match_candidates_to_search
 
 
-def _get_match_records(match_candidates_to_search) -> List:
-    match_record_list = []
+async def _get_match_records(match_candidates_to_search) -> List:
+    conn = aiohttp.TCPConnector(limit=5)
+    async with aiohttp.ClientSession(connector=conn) as session:
+        async def body(match_id, uid):
+            url = f"https://valorant.op.gg/api/player/matches/{match_id}?gameName={uid.name}&tagLine={uid.tag}"
 
-    for _, match_id, uid in match_candidates_to_search:
-        url = f"https://valorant.op.gg/api/player/matches/{match_id}?gameName={uid.name}&tagLine={uid.tag}"
-        response = requests.get(url, headers=HEADER)
-        match_record = json.loads(response.text)
+            try:
+                async with session.get(url, headers=HEADER) as r:
+                    match_record = json.loads(await r.text())
+            except aiohttp.ClientConnectionError:
+                traceback.format_exc()
+                raise
 
-        if (isinstance(match_record, dict)) and ('errorCode' in match_record.keys()):
-            # print(match_record, flush=True)
-            continue
+            if (isinstance(match_record, dict)) and ('errorCode' in match_record.keys()):
+                return
 
-        # validation
-        if len(match_record["participants"]) != 10:
-            continue
+            # validation
+            if len(match_record["participants"]) != 10:
+                return
 
-        match_record_list.append(match_record)
+            return match_record
 
-    return match_record_list 
+        result = await asyncio.gather(*(body(match_id, uid) for _, match_id, uid in match_candidates_to_search))
+        return [x for x in result if x is not None]  # remove None from exceptional cases
 
 
 def _get_user_stats(user_list, match_record_list) -> pd.DataFrame:
@@ -377,6 +398,7 @@ async def get_stats() -> str:
                                             "%Y-%m-%dT%H:%M:%S.%fZ") + timedelta(hours=9)
 
     final_df = _get_user_stats(user_list, match_record_list)    
+    print(final_df)
     dfi.export(final_df, 'table.png', max_cols=-1, max_rows=-1)
 
     # string += f"```{final_df.to_markdown(tablefmt='github', floatfmt='.1f')}```"
@@ -421,9 +443,9 @@ async def auto_balance() -> str:
 
 async def update() -> str:
     user_list = _get_user_list(all=True)
-    _refresh_match_records(user_list)
-    match_candidates_to_search = _get_match_candidates(user_list, 500, descending=False)
-    match_record_list = _get_match_records(match_candidates_to_search)
+    await _refresh_match_records(user_list)
+    match_candidates_to_search = await _get_match_candidates(user_list, 500, descending=False)
+    match_record_list = await _get_match_records(match_candidates_to_search)
 
     if len(match_record_list) == 0:
         return "(오류) 매치 기록이 존재하지 않습니다."
@@ -453,7 +475,7 @@ async def update() -> str:
 
 async def random_map() -> str():
     random.seed(time.time())
-    map_list = ["바인드", "프랙처", "헤이븐", "어센트", "아이스박스", "브리즈", "펄"]
+    map_list = ["스플릿", "로터스", "바인드", "프랙처", "헤이븐", "어센트", "아이스박스", "브리즈", "펄"]
     random.shuffle(map_list)
     return ", ".join(map_list)
 

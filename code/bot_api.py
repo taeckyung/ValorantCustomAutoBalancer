@@ -13,6 +13,7 @@ import pandas as pd
 import dataframe_image as dfi
 
 from typing import *
+from pprint import pprint
 from datetime import datetime, timedelta
 
 
@@ -26,11 +27,11 @@ DEFAULT_MMR = 150
 FRONT_CONST = 4
 BACK_CONST = 1
 EXPECTED_SCORE = 200
+MAX_TCP_CONNECTIONS = 10
 
 ################################################################################################
 # Helper Functions
 ################################################################################################
-
 
 class RiotID:
     def __init__(self, name: str, tag: str = None) -> None:
@@ -54,7 +55,7 @@ class RiotID:
         return self.fullName == __o.fullName
 
 
-def _get_user_list(all=True) -> List[RiotID]:
+def _get_user_list(all=False) -> List[RiotID]:
     if all:
         user_df = pd.read_csv("member_all.csv", encoding="utf-8")
     else:
@@ -63,7 +64,7 @@ def _get_user_list(all=True) -> List[RiotID]:
 
 
 async def _refresh_match_records(user_list):
-    conn = aiohttp.TCPConnector(limit=5)
+    conn = aiohttp.TCPConnector(limit=MAX_TCP_CONNECTIONS)
     async with aiohttp.ClientSession(connector=conn) as session:
         async def body(id):
             url = f"https://valorant.op.gg/api/renew?gameName={id.name}&tagLine={id.tag}"
@@ -79,14 +80,14 @@ async def _get_match_candidates(user_list, search_limit, descending=True) -> Lis
     match_id_list = set()
     match_candidates_to_search = []
     
-    conn = aiohttp.TCPConnector(limit=5)
+    conn = aiohttp.TCPConnector(limit=MAX_TCP_CONNECTIONS)
     async with aiohttp.ClientSession(connector=conn) as session:
         async def body(id, offset):
             url = f"https://valorant.op.gg/api/player/matches?gameName={id.name}&tagLine={id.tag}&queueId=custom&offset={offset}&limit=20"
             try:
                 async with session.get(url, headers=HEADER) as r:
                     match_record = json.loads(await r.text())
-            except aiohttp.ClientConnectionError:
+            except Exception:
                 traceback.format_exc()
                 return
 
@@ -107,7 +108,7 @@ async def _get_match_candidates(user_list, search_limit, descending=True) -> Lis
                 win_count_l = int(round_result.split(":")[0])
                 win_count_r = int(round_result.split(":")[1])
 
-                if win_count_l != 13 and win_count_r != 13:  # properly ended games / exclude deathmatches
+                if not ((win_count_l == 13 or win_count_r == 13) or (abs(win_count_l - win_count_r) == 2)):  # properly ended games / exclude deathmatches
                     return
 
                 match_time = datetime.strptime(match["gameStartDateTime"].split("+")[0], "%Y-%m-%dT%H:%M:%S")
@@ -119,15 +120,15 @@ async def _get_match_candidates(user_list, search_limit, descending=True) -> Lis
 
         await asyncio.gather(*(body(id, offset) for id in user_list for offset in range(0, search_limit+1, 20)))
 
-    match_candidates_to_search.sort(reverse=descending)
+    match_candidates_to_search.sort(reverse=True)
 
     return match_candidates_to_search
 
 
 async def _get_match_records(match_candidates_to_search) -> List:
-    conn = aiohttp.TCPConnector(limit=5)
+    conn = aiohttp.TCPConnector(limit=MAX_TCP_CONNECTIONS)
     async with aiohttp.ClientSession(connector=conn) as session:
-        async def body(match_id, uid):
+        async def body(match_time, match_id, uid):
             url = f"https://valorant.op.gg/api/player/matches/{match_id}?gameName={uid.name}&tagLine={uid.tag}"
 
             try:
@@ -144,10 +145,13 @@ async def _get_match_records(match_candidates_to_search) -> List:
             if len(match_record["participants"]) != 10:
                 return
 
-            return match_record
+            return match_time, match_record
 
-        result = await asyncio.gather(*(body(match_id, uid) for _, match_id, uid in match_candidates_to_search))
-        return [x for x in result if x is not None]  # remove None from exceptional cases
+        result = await asyncio.gather(*(body(match_time, match_id, uid) for match_time, match_id, uid in match_candidates_to_search))
+        result = [x for x in result if x is not None]  # remove None from exceptional cases
+        result.sort(reverse=False)
+        result = [x[1] for x in result]  # remove time and only maintain records
+        return result
 
 
 def _get_user_stats(user_list, match_record_list) -> pd.DataFrame:
@@ -157,19 +161,38 @@ def _get_user_stats(user_list, match_record_list) -> pd.DataFrame:
         user_stats_list[str(id)] = []
 
     for match_record in match_record_list:
+        # print(match_record)
+        cnt = 0
         for user in match_record["participants"]:
-            if user["riotAccount"] is None:
+            if user["gameName"] is None:
                 continue
 
-            user_id = RiotID(user["riotAccount"]["gameName"], user["riotAccount"]["tagLine"])
+            user_id = RiotID(user["gameName"], user["tagLine"])
             if user_id.fullName not in user_stats_list:
                 # print(user_id.fullName)
                 continue
 
+            cnt += 1
+
+        if cnt < 5:
+            continue
+
+        for user in match_record["participants"]:
+            if user["gameName"] is None:
+                continue
+
+            user_id = RiotID(user["gameName"], user["tagLine"])
+            if user_id.fullName not in user_stats_list:
+                # print(user_id.fullName)
+                continue
+
+            scorePerRound = user['score'] / user['rounds']
+            # print(scorePerRound)
+
             user_stats_list[user_id.fullName].append(
                 {
                     "win": float(user["won"]),
-                    "score": float(user["scorePerRound"]),
+                    "score": float(scorePerRound),
                     "ranking": float(user["roundRanking"]),
                     "kills": float(user["kills"]),
                     "deaths": float(user["deaths"]),
@@ -181,10 +204,11 @@ def _get_user_stats(user_list, match_record_list) -> pd.DataFrame:
     for user_name in user_stats_list.keys():
         df = pd.DataFrame.from_records(user_stats_list[user_name], columns=["win", "score", "ranking", "kills", "deaths", "assists"])
         final_df.loc[user_name] = df.mean(axis=0)
-    #     print("--------------------------------------")
-    #     print(user_name)
-    #     pprint(df.mean(axis=0))
-    #     print("--------------------------------------")
+        print("--------------------------------------")
+        print(user_name)
+        print(df)
+        pprint(df.mean(axis=0))
+        print("--------------------------------------")
 
     final_df["kda"] = final_df.apply(lambda r: (r["kills"] + r["assists"]) / r["deaths"], axis=1)
     mmr = _get_latest_mmr()
@@ -251,8 +275,10 @@ def _update_mmr(match: Dict, mmr_list: pd.Series):
     for player in match:
         if_win = 1 if player['won'] else -1
 
+        scorePerRound = player['score'] / player['rounds']
+
         front = FRONT_CONST * if_win * win_rounds
-        back = BACK_CONST * total_rounds * (player['scorePerRound'] - EXPECTED_SCORE) / EXPECTED_SCORE
+        back = BACK_CONST * total_rounds * (scorePerRound - EXPECTED_SCORE) / EXPECTED_SCORE
         # score = 1 / (FRONT_CONST + BACK_CONST) * (front + back)
 
         # save
@@ -260,11 +286,11 @@ def _update_mmr(match: Dict, mmr_list: pd.Series):
         backs.append(back)
 
         # secret account
-        if player['riotAccount'] == None:
+        if player['gameName'] == None:
             elos.append(DEFAULT_MMR * if_win)
             user_ids.append(None)
         else:
-            id = RiotID(player['riotAccount']['gameName'], player['riotAccount']['tagLine']).fullName
+            id = RiotID(player['gameName'], player['tagLine']).fullName
             if id not in mmr_list.index:
                 elos.append(DEFAULT_MMR * if_win)
                 user_ids.append(None)
@@ -390,7 +416,7 @@ async def get_stats() -> str:
         with open(file="match_record.pickle", mode="rb") as f:
             data = pickle.load(f)
             last_updated = data["time"]
-            match_record_list = data["match_record_list"][::-1][:30]
+            match_record_list = data["match_record_list"][::-1][:]
     except:
         return "(오류) 데이터를 업데이트 해주세요.", None
     
@@ -438,7 +464,7 @@ async def auto_balance() -> str:
     team_l = [x[1] for x in team_l]
     team_r = [x[1] for x in team_r]
 
-    return f"Latest Update: {last_updated.isoformat().replace('T', ' ')}, Latest Match: {df.name} (최근 30경기)\nTeam A: {' / '.join(team_l)} (average rating: {sum_l/5:.2f})\nTeam B: {' / '.join(team_r)} (average rating: {sum_r/5:.2f})\n"
+    return f"Latest Update: {last_updated.isoformat().replace('T', ' ')}, Latest Match: {df.name} (최근 100경기)\nTeam A: {' / '.join(team_l)} (average rating: {sum_l/5:.2f})\nTeam B: {' / '.join(team_r)} (average rating: {sum_r/5:.2f})\n"
 
 
 async def update() -> str:
@@ -466,6 +492,7 @@ async def update() -> str:
         mmr_list = _update_mmr(match, mmr_list)
         df_list.append(mmr_list.copy())
         time = datetime.strptime(match['participants'][0]["gameStartDateTime"], "%Y-%m-%dT%H:%M:%S.%fZ") + timedelta(hours=9)
+        print(time)
         time_list.append(time.isoformat().replace('T', ' '))
         
     df = pd.DataFrame(df_list, columns=user_list, index=time_list)
@@ -475,12 +502,12 @@ async def update() -> str:
 
 async def random_map() -> str():
     random.seed(time.time())
-    map_list = ["스플릿", "로터스", "바인드", "프랙처", "헤이븐", "어센트", "아이스박스", "브리즈", "펄"]
+    map_list = ["스플릿", "로터스", "바인드", "프랙처", "헤이븐", "어센트", "아이스박스", "브리즈", "펄", "선셋"]
     random.shuffle(map_list)
     return ", ".join(map_list)
 
 
 # %%
 if __name__ == '__main__':
-    print(asyncio.run(get_stats()))
+    print(asyncio.run(update()))
     # print(get_latest_mmr())

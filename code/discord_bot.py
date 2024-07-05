@@ -1,6 +1,8 @@
+import datetime
 from discord_token import DISCORD_TOKEN
 import bot_api
 import discord
+import logging
 
 
 class MyClient(discord.Client):
@@ -43,6 +45,9 @@ class MyClient(discord.Client):
             elif content.startswith('맵'):
                 result = await bot_api.random_map()
                 await message.channel.send(content=result)
+            elif content.startswith('기록'):
+                result = await bot_api.record()
+                await message.channel.send(content=result)
             else:
                 await message.channel.send(content="사용법: `!내전 멤버` `!내전 업데이트` `!내전 맵` `!내전 멤버 추가 [이름]` `!내전 멤버 삭제 [이름]` `!내전 자동밸런스` `!내전 스탯`")
         elif content.startswith('!냥'):
@@ -53,6 +58,9 @@ class MyClient(discord.Client):
 
 intents = discord.Intents.default()
 intents.message_content = True
+
+logfile = datetime.datetime.now().strftime("%Y-%m-%dT%H_%M_%S")
+logging.basicConfig(filename=f'log/{logfile}.txt', format='%(asctime)s %(message)s', filemode='w', level=logging.DEBUG, encoding='utf-8')
 
 client = MyClient(intents=intents)
 client.run(DISCORD_TOKEN)

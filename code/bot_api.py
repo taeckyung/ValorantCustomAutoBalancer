@@ -1,6 +1,7 @@
 
 # %%
 import json
+import logging
 import time
 import pickle
 import random
@@ -24,9 +25,8 @@ from datetime import datetime, timedelta
 
 HEADER = {'Accept-Language':'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7'}
 DEFAULT_MMR = 150
-FRONT_CONST = 4
-BACK_CONST = 1
-EXPECTED_SCORE = 200
+FRONT_CONST = 10
+BACK_CONST = 5
 MAX_TCP_CONNECTIONS = 10
 
 ################################################################################################
@@ -44,6 +44,8 @@ class RiotID:
             assert(name.count("#") == 0 and tag.count("#") == 0)
             self.name = name
             self.tag = tag
+        self.name = self.name.upper()
+        self.tag = self.tag.upper()
         self.fullName = f"{self.name}#{self.tag}"
 
     def __str__(self) -> str:
@@ -144,6 +146,8 @@ async def _get_match_records(match_candidates_to_search) -> List:
             # validation
             if len(match_record["participants"]) != 10:
                 return
+            
+            match_record['url'] = url
 
             return match_time, match_record
 
@@ -251,7 +255,7 @@ def _trans_mmr(MMR):
     elif MMR>300:
         tMMR = 300
     else:
-        tMMR = 0.95*(MMR-150)+150
+        tMMR = 1.0*(MMR-150)+150
     # tMMR = 100/(1+np.exp(-(MMR-100)/50))+50
     return tMMR
 
@@ -271,14 +275,19 @@ def _update_mmr(match: Dict, mmr_list: pd.Series):
     total_rounds = match[0]['rounds']
     win_rounds = np.abs(int(rounds[1]) - int(rounds[0]))
 
+    mean_score = 0.0
+    for player in match:
+        mean_score += player['score'] / player['rounds']
+    mean_score /= 10.0
+
     # run by person
     for player in match:
         if_win = 1 if player['won'] else -1
 
         scorePerRound = player['score'] / player['rounds']
 
-        front = FRONT_CONST * if_win * win_rounds
-        back = BACK_CONST * total_rounds * (scorePerRound - EXPECTED_SCORE) / EXPECTED_SCORE
+        front = FRONT_CONST * if_win # * win_rounds
+        back = BACK_CONST * (scorePerRound - mean_score) / mean_score
         # score = 1 / (FRONT_CONST + BACK_CONST) * (front + back)
 
         # save
@@ -420,15 +429,17 @@ async def get_stats() -> str:
     except:
         return "(오류) 데이터를 업데이트 해주세요.", None
     
-    latest_match_time = datetime.strptime(match_record_list[0]['participants'][0]["gameStartDateTime"], 
-                                            "%Y-%m-%dT%H:%M:%S.%fZ") + timedelta(hours=9)
+    latest_match_time = (datetime.strptime(match_record_list[0]['participants'][0]["gameStartDateTime"], 
+                                            "%Y-%m-%dT%H:%M:%S.%fZ") + timedelta(hours=9)).isoformat().replace('T', ' ')
+    oldest_match_time = (datetime.strptime(match_record_list[-1]['participants'][0]["gameStartDateTime"], 
+                                            "%Y-%m-%dT%H:%M:%S.%fZ") + timedelta(hours=9)).isoformat().replace('T', ' ')
 
     final_df = _get_user_stats(user_list, match_record_list)    
-    print(final_df)
+    logging.info(str(final_df))
     dfi.export(final_df, 'table.png', max_cols=-1, max_rows=-1)
 
     # string += f"```{final_df.to_markdown(tablefmt='github', floatfmt='.1f')}```"
-    return f"Latest Update: {last_updated.isoformat().replace('T', ' ')} \t|\t Latest Match: {latest_match_time.isoformat().replace('T', ' ')}\n", "table.png"
+    return f"Latest Update: {last_updated.isoformat().replace('T', ' ')} \t|\t Oldest Match: {oldest_match_time} \t|\t Latest Match: {latest_match_time}\n", "table.png"
 
 
 async def auto_balance() -> str:
@@ -442,6 +453,7 @@ async def auto_balance() -> str:
     with open(file="match_record.pickle", mode="rb") as f:
         data = pickle.load(f)
         last_updated = data["time"]
+        num_records = len(data["match_record_list"])
         
     df = _get_latest_mmr()
     if df is None:
@@ -464,7 +476,7 @@ async def auto_balance() -> str:
     team_l = [x[1] for x in team_l]
     team_r = [x[1] for x in team_r]
 
-    return f"Latest Update: {last_updated.isoformat().replace('T', ' ')}, Latest Match: {df.name} (최근 100경기)\nTeam A: {' / '.join(team_l)} (average rating: {sum_l/5:.2f})\nTeam B: {' / '.join(team_r)} (average rating: {sum_r/5:.2f})\n"
+    return f"Latest Update: {last_updated.isoformat().replace('T', ' ')}, Latest Match: {df.name} (최근 {num_records}경기)\nTeam A: {' / '.join(team_l)} (average rating: {sum_l/5:.2f})\nTeam B: {' / '.join(team_r)} (average rating: {sum_r/5:.2f})\n"
 
 
 async def update() -> str:
@@ -480,6 +492,7 @@ async def update() -> str:
         "time": datetime.now(),
         "match_record_list": match_record_list
     }
+    
     with open(file="match_record.pickle", mode="wb") as f:
         pickle.dump(data, f)
 
@@ -492,22 +505,32 @@ async def update() -> str:
         mmr_list = _update_mmr(match, mmr_list)
         df_list.append(mmr_list.copy())
         time = datetime.strptime(match['participants'][0]["gameStartDateTime"], "%Y-%m-%dT%H:%M:%S.%fZ") + timedelta(hours=9)
-        print(time)
+        logging.info(str(time) + "\t" + str(match['url']))
         time_list.append(time.isoformat().replace('T', ' '))
         
     df = pd.DataFrame(df_list, columns=user_list, index=time_list)
     df.to_csv(f"mmr.csv", encoding="utf-8", index=True, header=True)
-    return f"매치 업데이트 (Latest match: {df.index[-1]})"
+    return f"매치 업데이트 (Oldest match: {df.index[0]}, Latest match: {df.index[-1]})"
 
 
-async def random_map() -> str():
+async def random_map() -> str:
     random.seed(time.time())
-    map_list = ["스플릿", "로터스", "바인드", "프랙처", "헤이븐", "어센트", "아이스박스", "브리즈", "펄", "선셋"]
+    map_list = ["스플릿", "로터스", "바인드", "프랙처", "헤이븐", "어센트", "아이스박스", "브리즈", "펄", "선셋", "어비스"]
     random.shuffle(map_list)
     return ", ".join(map_list)
 
+async def record() -> str:
+    with open(file="match_record.pickle", mode="rb") as f:
+        data = pickle.load(f)
+        match_record_list = data["match_record_list"]
+        def get_record(match):
+            time = datetime.strptime(match['participants'][0]["gameStartDateTime"], "%Y-%m-%dT%H:%M:%S.%fZ") + timedelta(hours=9)
+            participants = ",".join(sorted([p['gameName'] for p in match['participants']]))
+            return str(time) + " - " + participants
+        return "\n".join([str(get_record(match)) for match in match_record_list])
 
 # %%
 if __name__ == '__main__':
+    # print(asyncio.run(update()))
     print(asyncio.run(update()))
     # print(get_latest_mmr())

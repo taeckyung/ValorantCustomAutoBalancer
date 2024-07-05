@@ -2,6 +2,7 @@
 # %%
 import json
 import logging
+import math
 import time
 import pickle
 import random
@@ -259,80 +260,59 @@ def _trans_mmr(MMR):
     # tMMR = 100/(1+np.exp(-(MMR-100)/50))+50
     return tMMR
 
+def _update_mmr(match: Dict, mmr_list: pd.Series) -> pd.Series:
+    # Constants
+    DEFAULT_MMR = 150
+    K_FACTOR_BASE = 16  # Reduced from 32
+    WIN_WEIGHT = 0.7  # Increased focus on win/loss
+    SCORE_WEIGHT = 0.3  # Reduced impact of score
+    MAX_CHANGE = 20  # Maximum MMR change per match
 
-def _update_mmr(match: Dict, mmr_list: pd.Series):
-    # init
-    elos, user_ids, fronts, backs = [], [], [], []
-
-    match = match['participants']
-
-    # check match
-    if len(match) != 10:
+    participants = match['participants']
+    if len(participants) != 10:
         return mmr_list
 
-    # check round
-    rounds = match[0]['roundResults'].split(':')
-    total_rounds = match[0]['rounds']
-    win_rounds = np.abs(int(rounds[1]) - int(rounds[0]))
+    # Calculate mean score per round for this match
+    mean_score = np.mean([p['score'] / p['rounds'] for p in participants])
 
-    mean_score = 0.0
-    for player in match:
-        mean_score += player['score'] / player['rounds']
-    mean_score /= 10.0
+    for player in participants:
+        player_id = RiotID(player['gameName'], player['tagLine']).fullName
+        if player_id not in mmr_list.index:
+            mmr_list[player_id] = DEFAULT_MMR  # Initialize new players
 
-    # run by person
-    for player in match:
-        if_win = 1 if player['won'] else -1
+        # Determine win/loss
+        won = player['won']
+        win_factor = 1 if won else -1
 
-        scorePerRound = player['score'] / player['rounds']
+        # Calculate score factor
+        score_per_round = player['score'] / player['rounds']
+        score_factor = (score_per_round - mean_score) / mean_score
+        score_factor = max(min(score_factor, 1), -1)  # Clamp score factor between -1 and 1
 
-        front = FRONT_CONST * if_win # * win_rounds
-        back = BACK_CONST * (scorePerRound - mean_score) / mean_score
-        # score = 1 / (FRONT_CONST + BACK_CONST) * (front + back)
+        # Calculate MMR change
+        win_change = K_FACTOR_BASE * win_factor * WIN_WEIGHT
+        score_change = K_FACTOR_BASE * score_factor * SCORE_WEIGHT
 
-        # save
-        fronts.append(front)
-        backs.append(back)
+        total_change = win_change + score_change
 
-        # secret account
-        if player['gameName'] == None:
-            elos.append(DEFAULT_MMR * if_win)
-            user_ids.append(None)
-        else:
-            id = RiotID(player['gameName'], player['tagLine']).fullName
-            if id not in mmr_list.index:
-                elos.append(DEFAULT_MMR * if_win)
-                user_ids.append(None)
-            else:
-                elos.append(mmr_list[id] * if_win)
-                user_ids.append(id)
-    # make numpy
-    elos = np.array(elos)
-    user_ids = np.array(user_ids)
+        # Get current MMR
+        current_mmr = mmr_list[player_id]
 
-    # win rate version
-    abs_elos = np.abs(elos)
-    mean_elo = abs_elos.mean()
-    winner_sum = abs_elos[elos >= 0].sum()
-    losser_sum = abs_elos[elos <= 0].sum()
-    rate_win = 2 * winner_sum / (winner_sum + losser_sum)
-    rate_loss = 2 * losser_sum / (winner_sum + losser_sum)
+        # Adjust change based on distance from default rating
+        distance = abs(current_mmr - DEFAULT_MMR)
+        adjustment_factor = 1 / (1 + math.exp(distance / 100))  # Smoother adjustment
+        adjusted_change = total_change * adjustment_factor
 
-    dMMR_front = np.array([1/rate_win*fronts[i] if elo_in>=0
-                     else rate_loss*fronts[i] for i, elo_in in enumerate(elos)]) / 8
-    dMMR_back = np.array([mean_elo/abs_elos[i] * back if back>=0
-                          else abs_elos[i]/mean_elo * back for i, back in enumerate(backs)]) / 8
-    dMMR = dMMR_front + dMMR_back
+        # Limit the maximum change
+        adjusted_change = max(min(adjusted_change, MAX_CHANGE), -MAX_CHANGE)
 
-    # update
-    for j, id in enumerate(user_ids):
-        if id is None:
-            continue
-        mmr_list[id] += dMMR[j]
-        mmr_list[id] = _trans_mmr(mmr_list[id])
+        # Apply change
+        new_mmr = current_mmr + adjusted_change
+
+        # Ensure MMR doesn't go below a minimum value (e.g., 50)
+        mmr_list[player_id] = max(50, new_mmr)
 
     return mmr_list
-
 
 def _get_latest_mmr():
     try:
@@ -425,7 +405,7 @@ async def get_stats() -> str:
         with open(file="match_record.pickle", mode="rb") as f:
             data = pickle.load(f)
             last_updated = data["time"]
-            match_record_list = data["match_record_list"][::-1][:]
+            match_record_list = data["match_record_list"][::-1][:]  # latest match first
     except:
         return "(오류) 데이터를 업데이트 해주세요.", None
     
@@ -479,22 +459,27 @@ async def auto_balance() -> str:
     return f"Latest Update: {last_updated.isoformat().replace('T', ' ')}, Latest Match: {df.name} (최근 {num_records}경기)\nTeam A: {' / '.join(team_l)} (average rating: {sum_l/5:.2f})\nTeam B: {' / '.join(team_r)} (average rating: {sum_r/5:.2f})\n"
 
 
-async def update() -> str:
+async def update(query=True) -> str:
     user_list = _get_user_list(all=True)
-    await _refresh_match_records(user_list)
-    match_candidates_to_search = await _get_match_candidates(user_list, 500, descending=False)
-    match_record_list = await _get_match_records(match_candidates_to_search)
+    if query:
+        await _refresh_match_records(user_list)
+        match_candidates_to_search = await _get_match_candidates(user_list, 500, descending=False)
+        match_record_list = await _get_match_records(match_candidates_to_search)
 
-    if len(match_record_list) == 0:
-        return "(오류) 매치 기록이 존재하지 않습니다."
+        if len(match_record_list) == 0:
+            return "(오류) 매치 기록이 존재하지 않습니다."
 
-    data = {
-        "time": datetime.now(),
-        "match_record_list": match_record_list
-    }
-    
-    with open(file="match_record.pickle", mode="wb") as f:
-        pickle.dump(data, f)
+        data = {
+            "time": datetime.now(),
+            "match_record_list": match_record_list
+        }
+        
+        with open(file="match_record.pickle", mode="wb") as f:
+            pickle.dump(data, f)
+    else:
+        with open(file="match_record.pickle", mode="rb") as f:
+            data = pickle.load(f)
+            match_record_list = data["match_record_list"]
 
     user_list = [str(id) for id in user_list]
     time_list = []
@@ -532,5 +517,6 @@ async def record() -> str:
 # %%
 if __name__ == '__main__':
     # print(asyncio.run(update()))
-    print(asyncio.run(update()))
-    # print(get_latest_mmr())
+    print(asyncio.run(update(query=False)))
+    # print(asyncio.run(get_stats()))
+    print(_get_latest_mmr())
